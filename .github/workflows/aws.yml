@@ -1,0 +1,130 @@
+# This workflow will build and push a new container image to Amazon ECR,
+# and then will deploy a new task definition to Amazon ECS, when a release is created
+#
+# To use this workflow, you will need to complete the following set-up steps:
+#
+# 1. Create an ECR repository to store your images.
+#    For example: `aws ecr create-repository --repository-name my-ecr-repo --region us-east-2`.
+#    Replace the value of `ECR_REPOSITORY` in the workflow below with your repository's name.
+#    Replace the value of `aws-region` in the workflow below with your repository's region.
+#
+# 2. Create an ECS task definition, an ECS cluster, and an ECS service.
+#    For example, follow the Getting Started guide on the ECS console:
+#      https://us-east-2.console.aws.amazon.com/ecs/home?region=us-east-2#/firstRun
+#    Replace the values for `service` and `cluster` in the workflow below with your service and cluster names.
+#
+# 3. Store your ECS task definition as a JSON file in your repository.
+#    The format should follow the output of `aws ecs register-task-definition --generate-cli-skeleton`.
+#    Replace the value of `task-definition` in the workflow below with your JSON file's name.
+#    Replace the value of `container-name` in the workflow below with the name of the container
+#    in the `containerDefinitions` section of the task definition.
+#
+# 4. Store an IAM user access key in GitHub Actions secrets named `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+#    See the documentation for each action used below for the recommended IAM policies for this IAM user,
+#    and best practices on handling the access key credentials.
+
+on:
+  push:
+    branches:
+      - master
+
+name: Deploy to Amazon ECS
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: eu-west-3
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push images to Amazon ECR
+      id: build-images
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        FLASK_API_REPOSITORY: tweet-reminder-flask-api
+        NGINX_REPOSITORY: tweet-reminder-nginx
+        POSTGRES_REPOSITORY: tweet-reminder-postgres
+        IMAGE_TAG: ${{ github.sha }}
+        NGINX_ENV: prod
+      run: |
+        # Build a docker image and
+        # push it to ECR so that it can
+        # be deployed to ECS.
+        docker build -t $ECR_REGISTRY/$FLASK_API_REPOSITORY:$IMAGE_TAG web
+        docker build -t $ECR_REGISTRY/$NGINX_REPOSITORY:$IMAGE_TAG nginx --build-arg ENV=$NGINX_ENV
+        docker build -t $ECR_REGISTRY/$POSTGRES_REPOSITORY:$IMAGE_TAG db
+        docker push $ECR_REGISTRY/$FLASK_API_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$NGINX_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$POSTGRES_REPOSITORY:$IMAGE_TAG
+        echo "::set-output name=flask_api_image::$ECR_REGISTRY/$FLASK_API_REPOSITORY:$IMAGE_TAG"
+        echo "::set-output name=nginx_image::$ECR_REGISTRY/$NGINX_REPOSITORY:$IMAGE_TAG"
+        echo "::set-output name=postgres_image::$ECR_REGISTRY/$POSTGRES_REPOSITORY:$IMAGE_TAG"
+
+    - name: Set flask api image ID in the API task definition
+      id: flask-api-task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ecs_task_definitions/tweet-reminder-flask-api-task-definition.json
+        container-name: tweet_reminder_flask_api
+        image: ${{ steps.build-images.outputs.flask_api_image }}
+    
+    - name: Set the nginx image ID in the API task definition
+      id: nginx-task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ${{ steps.flask-api-task-def.outputs.task-definition }}
+        container-name: tweet_reminder_nginx
+        image: ${{ steps.build-images.outputs.nginx_image }}
+        
+    - name: Deploy the API task to the API service
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.nginx-task-def.outputs.task-definition }}
+        service: tweet-reminder-api-service
+        cluster: tweet-reminder-cluster
+        wait-for-service-stability: true
+    
+    - name: Set flask api image ID in the CELERY task definition
+      id: celery-task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ecs_task_definitions/tweet-reminder-celery-task-definition.json
+        container-name: twit-reminder-celery-worker
+        image: ${{ steps.build-images.outputs.flask_api_image }}
+    
+    - name: Deploy the CELERY task to the CELERY service
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.celery-task-def.outputs.task-definition }}
+        service: twit-reminder-celery
+        cluster: tweet-reminder-cluster
+        wait-for-service-stability: true
+    
+    - name: Set the postgres image ID in the DB task definition
+      id: postgres-task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ecs_task_definitions/tweet-reminder-postgres-task-definition.json
+        container-name: twit_reminder_postgres
+        image: ${{ steps.build-images.outputs.postgres_image }}
+    
+    - name: Deploy the DB task to the DB service
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.postgres-task-def.outputs.task-definition }}
+        service: tweet-reminder-postgres
+        cluster: tweet-reminder-cluster
+        wait-for-service-stability: true

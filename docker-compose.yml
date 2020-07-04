@@ -1,0 +1,42 @@
+version: "3.7"
+services:
+  nginx:
+    build:
+      context: ./nginx/
+      args:
+        ENV: 'local'
+    depends_on: 
+      - web
+    ports:
+      - "8000:80"
+    container_name: twit_reminder_nginx
+  web:
+    restart: always
+    build: ./web
+    depends_on:
+      - db
+    volumes:
+      - ./web/:/reminder-bot/app/
+    env_file:
+      - ./web/env/.env.local
+    expose:
+      - 5000
+    container_name: twit_reminder_flask
+  db:
+    build: ./db
+    volumes:
+      - ./db/postgres-db-data:/var/lib/postgresql/data/
+    env_file:
+      - ./db/env/.env.local
+    ports:
+      - 54321:5432
+    container_name: twit_reminder_postgres
+  rabbitmq:
+    image: "rabbitmq:3-management"
+    env_file:
+      - ./rabbitmq/env/.env.local
+    ports:
+      - "15672:15672"
+      - "5672:5672"
+    container_name: twit_reminder_rabbitmq
+      
