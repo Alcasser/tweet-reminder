@@ -4,7 +4,7 @@
 Tweet reminder Twitter bot using Activity and Tweet APIs. Deployed on AWS.
 
 # Local development
-Using docker-compose for local development (Nginx, Flask, PostgreSQL)
+Using docker-compose for local development (Nginx, Flask, PostgreSQL, RabbitMQ)
 
 ## Starting services
 
